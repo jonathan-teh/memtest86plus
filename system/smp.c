@@ -481,7 +481,7 @@ static bool find_cpus_in_floating_mp_struct(void)
     }
     if (fp == NULL) {
         // Search the BIOS EBDA area.
-        uintptr_t address = *(uint16_t *)0x40E << 4;
+        uintptr_t address = (uintptr_t)bda_read16(0x40E) << 4;
         if (address) {
             fp = scan_for_floating_ptr_struct(address, 0x400);
         }
