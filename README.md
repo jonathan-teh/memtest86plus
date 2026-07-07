@@ -714,9 +714,7 @@ assistance listed below:
  * Eric Biederman provided all of the feature content for version 3.0
    plus many bugfixes and significant code cleanup.
 
- * Major enhancements to hardware detection and reporting in version 3.2, 3.3
-   and 3.4 provided by Samuel Demeulemeester (from Memtest86+ v1.11, v1.60
-   and v1.70).
+ * Chao Li and Dongyan Qian provided initial code to support LoongArch64 (LA64)
 
 In addition, several bug fixes for Memtest86+ were imported from
 [anphsw/memtest86](https://github.com/anphsw/memtest86).
