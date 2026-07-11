@@ -37,6 +37,14 @@ struct cpu_info *dmi_cpu_info;
 struct mem_dev *dmi_memory_devices[MAX_DMI_MEM_DEVICES];
 int dmi_num_memory_devices = 0;
 
+// Cached copies of board manufacturer and product name, saved at boot
+// before memory testing can overwrite the original SMBIOS table data.
+#define DMI_STRING_MAX  64
+
+static char dmi_board_manufacturer[DMI_STRING_MAX];
+static char dmi_board_product[DMI_STRING_MAX];
+static bool dmi_board_info_valid = false;
+
 static char *get_tstruct_string(struct tstruct_header *header, uint16_t maxlen, int n)
 {
     if (n < 1)
@@ -348,6 +356,17 @@ int smbios_init(void)
     return result;
 }
 
+void get_smbios_board_info(const char **manufacturer, const char **product)
+{
+    if (dmi_board_info_valid) {
+        *manufacturer = dmi_board_manufacturer;
+        *product = dmi_board_product;
+    } else {
+        *manufacturer = NULL;
+        *product = NULL;
+    }
+}
+
 void print_smbios_startup_info(void)
 {
     // Use baseboard info (struct type 2) as primary source of information,
@@ -379,6 +398,15 @@ void print_smbios_startup_info(void)
                     dmicol = 40 - ((sl1 + sl2) / 2);
                     dmicol = prints(LINE_DMI, dmicol, sys_man);
                     prints(LINE_DMI, dmicol + 1, sys_sku);
+
+                    // Cache copies for later use (memory tests overwrite SMBIOS data).
+                    int len1 = sl1 < DMI_STRING_MAX - 1 ? sl1 : DMI_STRING_MAX - 1;
+                    memcpy(dmi_board_manufacturer, sys_man, len1);
+                    dmi_board_manufacturer[len1] = '\0';
+                    int len2 = sl2 < DMI_STRING_MAX - 1 ? sl2 : DMI_STRING_MAX - 1;
+                    memcpy(dmi_board_product, sys_sku, len2);
+                    dmi_board_product[len2] = '\0';
+                    dmi_board_info_valid = true;
                 }
             }
         }

@@ -187,6 +187,12 @@ extern struct cpu_info *dmi_cpu_info;
 int smbios_init(void);
 
 /**
+ * Retrieve board manufacturer and product name strings.
+ * Sets output pointers to NULL if unavailable.
+ */
+void get_smbios_board_info(const char **manufacturer, const char **product);
+
+/**
  * Print DMI
  */
 

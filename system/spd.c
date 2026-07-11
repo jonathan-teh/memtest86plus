@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Copyright (C) 2004-2025 Sam Demeulemeester
+// Copyright (C) 2004-2026 Sam Demeulemeester
 
 #include "stdbool.h"
 #include "stdint.h"
@@ -21,6 +21,7 @@
 
 ram_info_t ram = { 0, 0, 0, 0, 0, 0, "N/A"};
 ram_slot_info_t ram_slot_info[MAX_SPD_SLOT];
+spd_info spd_slot_cache[MAX_SPD_SLOT];
 
 static inline uint8_t bcd_to_ui8(uint8_t bcd)
 {
