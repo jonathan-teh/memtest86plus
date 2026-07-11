@@ -15,6 +15,7 @@
 
 #include "cache.h"
 #include "cpuid.h"
+#include "cpulocal.h"
 #include "memsize.h"
 #include "simd.h"
 #include "tsc.h"
@@ -122,6 +123,10 @@ void test_list_init(void)
 
 int run_test(int my_cpu, int test, int stage, int iterations)
 {
+    // (Re)arm the canary guarding against this CPU overrunning its stack.
+    // Needed on every call: relocation invalidates the stack area.
+    stack_canary_arm(my_cpu);
+
     if (my_cpu == master_cpu) {
         if (window_num == 0) {
             // First window, so we need to test all selected lower memory.
