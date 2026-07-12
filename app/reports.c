@@ -224,6 +224,15 @@ static int format_results(char *buf, int bufsize)
         pos = buf_printf(pos, "Motherboard: %s %s\r\n", board_mfg, board_prod);
     }
 
+    const char *system_serial, *baseboard_serial;
+    get_smbios_serial_info(&system_serial, &baseboard_serial);
+    if (system_serial) {
+        pos = buf_printf(pos, "System Serial: %s\r\n", system_serial);
+    }
+    if (baseboard_serial) {
+        pos = buf_printf(pos, "Baseboard Serial: %s\r\n", baseboard_serial);
+    }
+
     pos = buf_printf(pos, "Memory: %u MB\r\n", (uintptr_t)(num_pm_pages / 256));
 
     // IMC or RAM spec line.
@@ -292,6 +301,9 @@ static int format_results(char *buf, int bufsize)
     // Per-test results.
     pos = buf_printf(pos, "Per-Test Results:\r\n");
     for (int i = 0; i < NUM_TEST_PATTERNS; i++) {
+        if (!test_list[i].enabled) {
+            continue;
+        }
         // Extract description text from between brackets.
         const char *desc = test_list[i].description;
         const char *start = desc;

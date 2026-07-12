@@ -43,6 +43,14 @@ static char dmi_board_manufacturer[DMI_STRING_MAX];
 static char dmi_board_product[DMI_STRING_MAX];
 static bool dmi_board_info_valid = false;
 
+// Cached copies of the system (type 1) and baseboard (type 2) serial
+// numbers, empty when the firmware provides none. Saved at boot, like
+// the board info above.
+static char dmi_system_serial[DMI_STRING_MAX];
+static char dmi_board_serial[DMI_STRING_MAX];
+
+static bool copy_dmi_string(char *dst, size_t dst_size, struct tstruct_header *header, uint8_t string_idx);
+
 static char *get_tstruct_string(struct tstruct_header *header, uint16_t maxlen, int n)
 {
     if (n < 1)
@@ -269,6 +277,19 @@ static void override_cpu_model(void)
 }
 #endif
 
+// Snapshot the serial numbers before the memory tests overwrite the table.
+static void capture_serial_numbers(void)
+{
+    if (dmi_system_info != NULL) {
+        copy_dmi_string(dmi_system_serial, sizeof(dmi_system_serial),
+                        &dmi_system_info->header, dmi_system_info->serialnumber);
+    }
+    if (dmi_baseboard_info != NULL) {
+        copy_dmi_string(dmi_board_serial, sizeof(dmi_board_serial),
+                        &dmi_baseboard_info->header, dmi_baseboard_info->serialnumber);
+    }
+}
+
 static int8_t table_checksum(const uint8_t *start, uint8_t length)
 {
     int8_t checksum = 0;
@@ -350,6 +371,10 @@ int smbios_init(void)
 
     int result = parse_dmi(numstructs);
 
+    if (result == 0) {
+        capture_serial_numbers();
+    }
+
 #if defined(__aarch64__)
     if (result == 0) {
         override_cpu_model();
@@ -368,6 +393,12 @@ void get_smbios_board_info(const char **manufacturer, const char **product)
         *manufacturer = NULL;
         *product = NULL;
     }
+}
+
+void get_smbios_serial_info(const char **system_serial, const char **baseboard_serial)
+{
+    *system_serial = dmi_system_serial[0] != '\0' ? dmi_system_serial : NULL;
+    *baseboard_serial = dmi_board_serial[0] != '\0' ? dmi_board_serial : NULL;
 }
 
 void print_smbios_startup_info(void)
@@ -557,14 +588,14 @@ static bool dmi_string_is_junk(const char *s, size_t len)
     return false;
 }
 
-static bool copy_dmi_string(char *dst, size_t dst_size, struct mem_dev *md, uint8_t string_idx)
+static bool copy_dmi_string(char *dst, size_t dst_size, struct tstruct_header *header, uint8_t string_idx)
 {
     dst[0] = '\0';
 
-    uint32_t remaining = table_length - (uint32_t)((const uint8_t *)md - table_start);
+    uint32_t remaining = table_length - (uint32_t)((const uint8_t *)header - table_start);
     uint16_t maxlen = remaining > UINT16_MAX ? UINT16_MAX : remaining;
 
-    const char *src = get_tstruct_string(&md->header, maxlen, string_idx);
+    const char *src = get_tstruct_string(header, maxlen, string_idx);
     if (src == NULL) {
         return false;
     }
@@ -638,10 +669,10 @@ void print_dmi_memory_info(void)
         g.speed   = memdev_speed_mts(md);
         g.type    = md->type;
         g.manuf   = memdev_jep106_name(md);
-        if (g.manuf == NULL && copy_dmi_string(g.manuf_str, sizeof(g.manuf_str), md, md->manufacturer)) {
+        if (g.manuf == NULL && copy_dmi_string(g.manuf_str, sizeof(g.manuf_str), &md->header, md->manufacturer)) {
             g.manuf = g.manuf_str;
         }
-        if (!copy_dmi_string(g.part_num, sizeof(g.part_num), md, md->partnum)) {
+        if (!copy_dmi_string(g.part_num, sizeof(g.part_num), &md->header, md->partnum)) {
             g.part_num[0] = '\0';
         }
 

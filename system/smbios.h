@@ -200,6 +200,13 @@ int smbios_init(void);
 void get_smbios_board_info(const char **manufacturer, const char **product);
 
 /**
+ * Retrieve the system (type 1) and baseboard (type 2) serial numbers,
+ * snapshotted at boot before the tests overwrite the SMBIOS table.
+ * Sets output pointers to NULL if unavailable.
+ */
+void get_smbios_serial_info(const char **system_serial, const char **baseboard_serial);
+
+/**
  * Print DMI
  */
 
