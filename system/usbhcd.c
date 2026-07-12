@@ -19,6 +19,11 @@
 #include "string.h"
 #include "unistd.h"
 
+#if defined(USB_DEBUG_HOLD)
+#include "cpuinfo.h"
+#include "tsc.h"
+#endif
+
 #include "usbhcd.h"
 
 //------------------------------------------------------------------------------
@@ -48,6 +53,7 @@ typedef enum {
 
 typedef struct {
     hci_type_t      type;
+    bool            platform;   // a non-PCI controller at a fixed MMIO address
     uint8_t         bus;
     uint8_t         dev;
     uint8_t         func;
@@ -100,6 +106,10 @@ static int print_col = 0;
 static bool usb_runtime_scan = false;
 
 static usb_msd_t usb_msd_info;
+
+// Index into hcd_list of the controller hosting the MSD. Stored as an index because
+// a cached usb_hcd_t pointer would go stale on relocation (see the note in reloc64.c).
+static int usb_msd_hcd_idx = -1;
 
 //------------------------------------------------------------------------------
 // Public Variables
@@ -264,8 +274,9 @@ static void get_keyboard_info_from_descriptors(const uint8_t *desc_buffer, int d
         } else if (header->type == USB_DESC_ENDPOINT && header->length == sizeof(usb_endpoint_desc_t)) {
             usb_endpoint_desc_t *endpoint = (usb_endpoint_desc_t *)curr_ptr;
             if (usb_init_options & USB_DEBUG_KBD) {
-                print_usb_info("endpoint addr 0x%02x attr 0x%02x",
-                               (uintptr_t)endpoint->address, (uintptr_t)endpoint->attributes);
+                print_usb_info("endpoint addr 0x%02x attr 0x%02x maxpkt %i interval %i",
+                               (uintptr_t)endpoint->address, (uintptr_t)endpoint->attributes,
+                               (uintptr_t)endpoint->max_packet_size, (uintptr_t)endpoint->interval);
                 sleep(1);
             }
             if (kbd && (endpoint->address & 0x80) && (endpoint->attributes & 0x3) == 0x3) {
@@ -463,7 +474,7 @@ static bool check_for_usb_msd(const usb_hcd_t *hcd, const usb_ep_t *ep0, usb_spe
     }
     ep_out.driver_data = *(uintptr_t *)hcd->ws->data_buffer;
 
-    usb_msd_info.hcd     = hcd;
+    usb_msd_hcd_idx      = hcd - hcd_list;
     usb_msd_info.ep0     = *ep0;
     usb_msd_info.ep_in   = ep_in;
     usb_msd_info.ep_out  = ep_out;
@@ -583,6 +594,7 @@ static int find_usb_controllers(hci_info_t hci_list[])
                         hci_type_t controller_type = pci_config_read8(bus, dev, func, 0x09) >> 4;
                         if (controller_type < MAX_HCI_TYPE) {
                             hci_list[num_hci].type = controller_type;
+                            hci_list[num_hci].platform = false;
                             hci_list[num_hci].bus  = bus;
                             hci_list[num_hci].dev  = dev;
                             hci_list[num_hci].func = func;
@@ -606,12 +618,54 @@ static int find_usb_controllers(hci_info_t hci_list[])
             }
         }
     }
+
+#if defined(__aarch64__)
+    // Add platform (non-PCI) XHCI controllers at fixed MMIO addresses.
+    uintptr_t plat_base;
+    for (int i = 0; num_hci < MAX_HCI && platform_usb_controller(i, &plat_base); i++) {
+        hci_list[num_hci].type = XHCI;
+        hci_list[num_hci].platform = true;
+        hci_list[num_hci].pm_base_addr = plat_base;
+        num_hci++;
+    }
+#endif
+
     return num_hci;
 }
 
 static void reset_usb_controller(hci_info_t *hci)
 {
     hci_type_t controller_type = hci->type;
+
+#if defined(__aarch64__)
+    if (hci->platform) {
+        // A platform controller has no PCI config space; the firmware has
+        // already powered and clocked it. Just map and reset it.
+        print_usb_info("Found platform %s controller at %08x",
+                       hci_name[controller_type], hci->pm_base_addr);
+        uintptr_t plat_addr = map_region(hci->pm_base_addr, 0x20000, false);
+        if (plat_addr == 0 || controller_type != XHCI) {
+            print_usb_info(" Failed to map device into virtual memory");
+            hci->type = NOT_HCI;  // mark this controller as unusable
+            return;
+        }
+#if defined(USB_DEBUG_HOLD)
+        // Identify the controller (Synopsys DWC3/DWC_usb31 ID register,
+        // 0x5533xxxx/0x3331xxxx; 0 or all-ones = unclocked or wrong
+        // address) and its port direction (GCTL[13:12], 1 = host mode).
+        uint32_t gsnpsid = read32((uint32_t *)(plat_addr + 0xC120));
+        uint32_t gctl    = read32((uint32_t *)(plat_addr + 0xC110));
+        print_usb_info(" DWC3 id %08x prtcapdir %i", gsnpsid, (gctl >> 12) & 3);
+#endif
+        if (!xhci_reset(plat_addr)) {
+            print_usb_info(" Controller reset failed");
+            hci->type = NOT_HCI;  // mark this controller as unusable
+            return;
+        }
+        hci->vm_base_addr = plat_addr;
+        return;
+    }
+#endif
 
     int bus  = hci->bus;
     int dev  = hci->dev;
@@ -652,6 +706,20 @@ static void reset_usb_controller(hci_info_t *hci)
     base_addr &= ~(uintptr_t)0xf;
     mmio_size &= ~(uintptr_t)0xf;
     mmio_size = ~mmio_size + 1;
+
+#if defined(__aarch64__)
+    // Firmware often leaves the BARs of devices it didn't use unassigned
+    // on this architecture, so allocate an MMIO address ourselves.
+    if (!in_io_space && base_addr == 0 && mmio_size != 0) {
+        base_addr = pci_alloc_mmio(bus, dev, func, bar, mmio_size);
+        if (base_addr == 0) {
+            print_usb_info("Found %s controller %04x:%04x with no MMIO address; allocation failed",
+                           hci_name[controller_type], (uintptr_t)vendor_id, (uintptr_t)device_id);
+            hci->type = NOT_HCI;  // mark this controller as unusable
+            return;
+        }
+    }
+#endif
 
     // Restore access to the device and set the bus master flag in case the BIOS hasn't.
     pci_config_write16(bus, dev, func, 0x04, pci_command | (in_io_space ? 0x0005 : 0x0006));
@@ -950,6 +1018,8 @@ bool find_attached_usb_keyboards(const usb_hcd_t *hcd, const usb_hub_t *hub, int
     }
     usb_device_desc_t *device = (usb_device_desc_t *)hcd->ws->data_buffer;
     bool is_hub = (device->class == USB_CLASS_HUB);
+
+    // Saved before the configuration descriptors below overwrite the device descriptor.
     uint8_t product_str_index = device->product_str;
     uint8_t num_configs = device->num_configs;
     uint16_t vendor_id = device->vendor_id;
@@ -1011,7 +1081,8 @@ bool find_attached_usb_keyboards(const usb_hcd_t *hcd, const usb_hub_t *hub, int
             }
             if (!configure_keyboard(hcd, &ep0, kbd->interface_num)) break;
 
-            print_usb_info(" Keyboard found on port %i interface %i endpoint %i",
+            print_usb_info(" Keyboard %04x:%04x found on port %i interface %i endpoint %i",
+                           (uintptr_t)vendor_id, (uintptr_t)product_id,
                            port_num, kbd->interface_num, kbd->endpoint_num);
 
             keyboard_found = true;
@@ -1060,6 +1131,12 @@ bool process_usb_keyboard_report(const usb_hcd_t *hcd, const hid_kbd_rpt_t *repo
 
 void find_usb_keyboards(bool pause_if_none)
 {
+#if defined(USB_DEBUG_HOLD)
+    // Diagnostic builds: also dump the interface and endpoint descriptors
+    // of each device encountered during enumeration.
+    usb_init_options |= USB_DEBUG_KBD;
+#endif
+
     clear_screen();
     print_usb_info("Scanning for USB keyboards & Mass Storage Devices...");
 
@@ -1107,6 +1184,23 @@ void find_usb_keyboards(bool pause_if_none)
             print_row--; // overwrite message
         }
     }
+
+#if defined(USB_DEBUG_HOLD)
+    // Diagnostic builds: echo raw keycodes for a while so keyboard traffic
+    // (or its absence) can be observed, then continue unattended.
+    print_usb_info("USB_DEBUG_HOLD: type on the keyboard(s) now (20 seconds)...");
+    {
+        uint64_t end_time = get_tsc() + 20 * 1000 * (uint64_t)clks_per_msec;
+        int echoed = 0;
+        while (get_tsc() < end_time) {
+            uint8_t keycode = get_usb_keycode();
+            if (keycode != 0 && echoed < 20) {
+                print_usb_info(" got keycode %02x", (uintptr_t)keycode);
+                echoed++;
+            }
+        }
+    }
+#endif
 }
 
 uint8_t get_usb_keycode(void)
@@ -1137,10 +1231,11 @@ void usb_rearm_keyboards(void)
 
 bool find_usb_mass_storage(usb_msd_t *msd)
 {
-    if (!usb_mass_storage_found) {
+    if (!usb_mass_storage_found || usb_msd_hcd_idx < 0) {
         return false;
     }
     *msd = usb_msd_info;
+    msd->hcd = &hcd_list[usb_msd_hcd_idx];
     msd->block_count = 0;
     msd->block_size  = 512;
     return true;

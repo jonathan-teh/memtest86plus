@@ -65,9 +65,16 @@
 #define TEST_INTERRUPT      0
 #endif
 
+#if defined(__aarch64__)
+// RAM may start well above physical address 0, so the load limits are
+// computed at run time, relative to the start of RAM (check global_init)
+#define LOW_LOAD_LIMIT      low_load_limit
+#define HIGH_LOAD_LIMIT     high_load_limit
+#else
 #define LOW_LOAD_LIMIT      SIZE_C(4,MB)  // must be a multiple of the page size
 
 #define HIGH_LOAD_LIMIT     (VM_PINNED_SIZE << PAGE_SHIFT)
+#endif
 
 //------------------------------------------------------------------------------
 // Private Variables
@@ -165,6 +172,10 @@ static void run_at(uintptr_t addr, int my_cpu)
             memcpy((void *)(addr + locals_offset), (void *)(_start + locals_offset), LOCALS_SIZE);
             locals_offset += AP_STACK_SIZE;
         }
+#if defined(__aarch64__)
+        // Make the copied code visible to instruction fetch.
+        cache_sync_code_range((void *)addr, (void *)(addr + (_stacks - _start)));
+#endif
     }
     LONG_BARRIER;
 
@@ -173,6 +184,10 @@ static void run_at(uintptr_t addr, int my_cpu)
     // The 32-bit startup code needs to know where it is located.
     __asm__ __volatile__("movl %0, %%edi; jmp *%0" : : "r" (new_start_addr));
     __builtin_unreachable();
+#elif defined(__aarch64__)
+    // Discard any instructions speculatively fetched before the I-cache invalidation.
+    __asm__ __volatile__("isb");
+    ((void (*)(void))new_start_addr)();
 #else
     ((void (*)(void))new_start_addr)(); // Formerly a non-portable construct: goto *new_start_addr;
 #endif
@@ -192,12 +207,20 @@ static void relocate_to(uintptr_t addr)
         memset((void *)(addr + locals_offset), 0, LOCALS_SIZE);
         locals_offset += AP_STACK_SIZE;
     }
+#if defined(__aarch64__)
+    // Make the copied code visible to instruction fetch.
+    cache_sync_code_range((void *)addr, (void *)(addr + (_stacks - _start)));
+#endif
 
     // Jump to new_start_addr.
 #ifdef __i386__
     // The 32-bit startup code needs to know where it is located.
     __asm__ __volatile__("movl %0, %%edi; jmp *%0" : : "r" (new_start_addr));
     __builtin_unreachable();
+#elif defined(__aarch64__)
+    // Discard any instructions speculatively fetched before the I-cache invalidation.
+    __asm__ __volatile__("isb");
+    ((void (*)(void))new_start_addr)();
 #else
     ((void (*)(void))new_start_addr)();
 #endif
@@ -362,6 +385,9 @@ static void global_init(void)
     for (int i = 0; i < pm_map_size; i++) {
         trace(0, "pm %0*x - %0*x", 2*sizeof(uintptr_t), pm_map[i].start, 2*sizeof(uintptr_t), pm_map[i].end);
     }
+    if (paging_incomplete) {
+        trace(0, "WARNING: page table pool exhausted, some address ranges are not mapped");
+    }
     if (acpi_config.rsdp_addr != 0) {
         trace(0, "ACPI RSDP (v%u.%u) found in %s at %0*x", acpi_config.ver_maj, acpi_config.ver_min, rsdp_source, 2*sizeof(uintptr_t), acpi_config.rsdp_addr);
         trace(0, "ACPI FADT found at %0*x", 2*sizeof(uintptr_t), acpi_config.fadt_addr);
@@ -463,6 +489,9 @@ static void setup_vm_map(uintptr_t win_start, uintptr_t win_end)
                 uint64_t new_end;
 
                 while (1) {
+                    if (vm_map_size >= MAX_MEM_SEGMENTS) {
+                        break;
+                    }
                     if (smp_narrow_to_proximity_domain(orig_start, orig_end, &proximity_domain_idx, &new_start, &new_end)) {
                         // Create a new entry in the virtual memory map.
                         num_mapped_pages += (new_end - new_start) >> PAGE_SHIFT;
@@ -580,7 +609,13 @@ static void test_all_windows(int my_cpu)
                 break;
               case 1:
                 window_start = (LOW_LOAD_LIMIT >> PAGE_SHIFT);
+#if defined(__aarch64__)
+                // LOW_LOAD_LIMIT may be above VM_WINDOW_SIZE. End the window
+                // at the next window boundary to avoid recheck the region containing the low copy.
+                window_end   = (window_start + VM_WINDOW_SIZE) & ~(VM_WINDOW_SIZE - 1);
+#else
                 window_end   = VM_WINDOW_SIZE;
+#endif
                 break;
               default:
                 window_start = window_end;

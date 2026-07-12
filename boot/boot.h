@@ -91,7 +91,11 @@ extern uintptr_t boot_params_addr;
 
 extern uint8_t	ap_trampoline[];
 
+#if defined(__loongarch_lp64) || defined(__aarch64__)
+extern uintptr_t ap_startup_addr;
+#else
 extern uint32_t	ap_startup_addr;
+#endif
 
 extern uint8_t	ap_trampoline_end[];
 
