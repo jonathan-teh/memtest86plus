@@ -562,6 +562,21 @@ static bool find_cpus_in_floating_mp_struct(void)
 }
 #endif
 
+#if defined(__i386__) || defined(__x86_64__)
+// Firmware may list the same core as both a local APIC and an x2APIC entry.
+static bool apic_id_already_listed(cpu_apic_id_t apic_id, int found_cpus)
+{
+    int count = found_cpus < MAX_CPUS ? found_cpus : MAX_CPUS;
+
+    for (int i = 0; i < count; i++) {
+        if (cpu_num_to_apic_id[i] == apic_id) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 static bool find_cpus_in_madt(void)
 {
     if (acpi_config.madt_addr == 0) {
@@ -603,7 +618,8 @@ static bool find_cpus_in_madt(void)
                 return false;
             }
             madt_processor_entry_t *entry = (madt_processor_entry_t *)tab_entry_ptr;
-            if (entry->flags & (MADT_PF_ENABLED|MADT_PF_ONLINE_CAPABLE)) {
+            if ((entry->flags & (MADT_PF_ENABLED|MADT_PF_ONLINE_CAPABLE))
+             && !apic_id_already_listed(entry->apic_id, found_cpus)) {
                 if (num_available_cpus < MAX_CPUS) {
                     cpu_num_to_apic_id[found_cpus] = entry->apic_id;
                     // The first CPU is the BSP, don't increment.
@@ -619,7 +635,8 @@ static bool find_cpus_in_madt(void)
                 return false;
             }
             madt_processor_x2apic_entry_t *entry = (madt_processor_x2apic_entry_t *)tab_entry_ptr;
-            if (entry->flags & MADT_PF_ENABLED) {
+            if ((entry->flags & MADT_PF_ENABLED)
+             && !apic_id_already_listed(entry->apic_id, found_cpus)) {
                 if (num_available_cpus < MAX_CPUS) {
                     cpu_num_to_apic_id[found_cpus] = entry->apic_id;
                     // The first CPU is the BSP, don't increment.
@@ -687,6 +704,28 @@ static bool find_cpus_in_madt(void)
 #endif
     return true;
 }
+
+#if defined(__i386__) || defined(__x86_64__)
+// The BSP is not always the first CPU listed in the MADT. Make sure it is in
+// slot 0, otherwise smp_start() would send INIT-SIPI to the BSP itself,
+// hanging the system, and the AP listed in slot 0 would never be started.
+static void verify_bsp_is_cpu0(void)
+{
+    cpu_apic_id_t bsp_apic_id = (cpu_apic_id_t)my_apic_id();
+
+    if (cpu_num_to_apic_id[0] == bsp_apic_id) {
+        return;
+    }
+    for (int i = 1; i < num_available_cpus; i++) {
+        if (cpu_num_to_apic_id[i] == bsp_apic_id) {
+            cpu_num_to_apic_id[i] = cpu_num_to_apic_id[0];
+            break;
+        }
+    }
+    // If the BSP wasn't listed at all, this drops the CPU that was in slot 0.
+    cpu_num_to_apic_id[0] = bsp_apic_id;
+}
+#endif
 
 static bool find_numa_nodes_in_srat(void)
 {
@@ -1146,6 +1185,9 @@ void smp_init(bool smp_enable)
     if (smp_enable) {
 #if defined(__i386__) || defined(__x86_64__)
         (void)(find_cpus_in_madt() || find_cpus_in_floating_mp_struct());
+        if (apic != NULL || apic_x2apic) {
+            verify_bsp_is_cpu0();
+        }
 #else
         find_cpus_in_madt();
 #endif
