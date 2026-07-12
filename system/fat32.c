@@ -27,7 +27,7 @@
 #define MBR_TYPE_GPT_PROTECTIVE 0xEE
 
 // GPT header signature at sector 1.
-static const char gpt_signature[8] = "EFI PART";
+static const uint8_t gpt_signature[8] = { 'E', 'F', 'I', ' ', 'P', 'A', 'R', 'T' };
 
 // "Basic Data Partition" GUID: EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 (mixed-endian)
 static const uint8_t gpt_basic_data_guid[16] = {
