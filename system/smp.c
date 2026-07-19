@@ -911,6 +911,8 @@ static inline void send_ipi(int apic_id, int trigger __attribute__((unused)), in
 #if defined(__i386__) || defined(__x86_64__)
     if (apic_x2apic) {
         uint64_t icr = ((uint64_t)apic_id << 32) | (uint32_t)(trigger << 15 | level << 14 | mode << 8 | vector);
+        // The x2APIC ICR WRMSR is not serializing; fence so older stores are visible first (SDM vol 3A 11.12.3).
+        __asm__ __volatile__ ("mfence; lfence" : : : "memory");
         wrmsr(MSR_IA32_X2APIC_BASE + APIC_REG_ICRLO, (uint32_t)icr, (uint32_t)(icr >> 32));
         return;
     }
