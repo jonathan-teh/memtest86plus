@@ -199,6 +199,44 @@ static void amd_zen_apply_tctl_offset(void)
     }
 }
 
+// AMD dual-CCD X3D CPUs pair one 96MB V-Cache CCD with one 32MB standard CCD.
+// CPUID leaf 0x80000006 cannot describe this asymmetric layout: it reports the
+// boot CCD's 96MB L3 scaled by the CCD count (192MB) instead of the real 128MB.
+typedef struct {
+    uint8_t      ext_family;
+    uint8_t      ext_model;
+    char         brand_prefix[CPUID_BRAND_STR_LENGTH];
+} amd_x3d_dual_ccd_t;
+
+static const amd_x3d_dual_ccd_t amd_x3d_dual_ccd_table[] = {
+    { 0xA, 0x6, "AMD Ryzen 9 7900X3D"  },   // Raphael       (Family 19h, Model 61h)
+    { 0xA, 0x6, "AMD Ryzen 9 7950X3D"  },   // Raphael       (Family 19h, Model 61h)
+    { 0xA, 0x6, "AMD Ryzen 9 7945HX3D" },   // Dragon Range  (Family 19h, Model 61h)
+    { 0xB, 0x4, "AMD Ryzen 9 9900X3D"  },   // Granite Ridge (Family 1Ah, Model 44h)
+    { 0xB, 0x4, "AMD Ryzen 9 9950X3D"  },   // Granite Ridge (Family 1Ah, Model 44h)
+    // Symmetric X3D parts report their L3 correctly: keep out the single-CCD
+    // 5800X3D/7600X3D/7800X3D/9800X3D (96MB) and the dual V-Cache 9950X3D2 (192MB).
+};
+
+static bool is_amd_dual_ccd_x3d(void)
+{
+    const char *brand = cpuid_info.brand_id.str;
+
+    for (size_t i = 0; i < sizeof(amd_x3d_dual_ccd_table) / sizeof(amd_x3d_dual_ccd_table[0]); i++) {
+        const amd_x3d_dual_ccd_t *e = &amd_x3d_dual_ccd_table[i];
+        const size_t len = strlen(e->brand_prefix);
+
+        // Whole-token match, so "9950X3D" doesn't catch the "9950X3D2".
+        if (e->ext_family == cpuid_info.version.extendedFamily
+            && e->ext_model == cpuid_info.version.extendedModel
+            && strncmp(brand, e->brand_prefix, len) == 0
+            && (brand[len] == ' ' || brand[len] == '\0')) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void loongson_7a00_ehci_workaround(void)
 {
     uintptr_t reg_addr = 0x10010000;
@@ -377,6 +415,18 @@ void quirks_init(void)
         quirk.id    = QUIRK_AMD_ZEN_TCTL_OFFSET;
         quirk.type |= QUIRK_TYPE_TEMP;
         quirk.process = amd_zen_apply_tctl_offset;
+    }
+
+    //  -----------------------------------------------
+    //  -- AMD Dual-CCD Asymmetric L3 cache size fix --
+    //  -----------------------------------------------
+    if (cpuid_info.vendor_id.str[0] == 'A' && cpuid_info.version.family == 0xF
+        && cpuid_info.version.extendedFamily >= 0xA
+        && l3_cache == 192 * 1024 && is_amd_dual_ccd_x3d()) {
+
+        quirk.id = QUIRK_AMD_X3D_L3_SIZE;
+        quirk.type |= QUIRK_TYPE_CPUID;
+        l3_cache = 128 * 1024;      // 96MB (V-Cache CCD) + 32MB (standard CCD)
     }
 
     //  -----------------------------------------------------------

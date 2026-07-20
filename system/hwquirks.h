@@ -20,6 +20,7 @@
 #define QUIRK_TYPE_TIMER    (1 << 5)
 #define QUIRK_TYPE_MEM_SIZE (1 << 6)
 #define QUIRK_TYPE_TEMP     (1 << 7)
+#define QUIRK_TYPE_CPUID    (1 << 8)
 
 typedef enum {
     QUIRK_NONE,
@@ -30,6 +31,7 @@ typedef enum {
     QUIRK_K8_REVFG_TEMP,
     QUIRK_AMD_ERRATA_319,
     QUIRK_AMD_ZEN_TCTL_OFFSET,
+    QUIRK_AMD_X3D_L3_SIZE,
     QUIRK_VIA_VP,
     QUIRK_SIS_530,
     QUIRK_LOONGSON7A00_EHCI_WORKARD,
@@ -39,7 +41,7 @@ typedef enum {
 
 typedef struct {
     quirk_id_t   id;
-    uint8_t      type;
+    uint16_t     type;
     uint16_t     root_vid;
     uint16_t     root_did;
     void (*process)(void);
